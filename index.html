@@ -104,6 +104,10 @@
   .section-desc { color: var(--muted); font-size: 0.82rem; margin: 0 0 10px; }
   .hot { color: var(--hot); }
   .hot .section-title { color: var(--hot); }
+  .align-block {
+    margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--border);
+  }
+  .align-block > .controls + div:not(:empty) { margin-bottom: 24px; }
 </style>
 </head>
 <body>
@@ -133,6 +137,23 @@
   </div>
   <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
   <div id="resultArea"></div>
+
+  <div class="align-block" id="alignBlock" style="display: none;">
+    <div class="controls">
+      <button id="scan15Btn">15分K 多頭排列（50均 &gt; 150均 &gt; 200均）</button>
+      <button id="export15Btn" disabled>匯出 TXT</button>
+      <span class="status" id="status15"></span>
+    </div>
+    <div id="result15"></div>
+
+    <div class="controls">
+      <button id="scan30Btn">30分K 多頭排列（50均 &gt; 150均 &gt; 200均）</button>
+      <button id="export30Btn" disabled>匯出 TXT</button>
+      <span class="status" id="status30"></span>
+    </div>
+    <div id="result30"></div>
+  </div>
+
   <footer>
     資料來源：Bybit USDT 永續合約公開 API（api.bybit.com）。僅供研究參考，非投資建議。
   </footer>
@@ -153,10 +174,27 @@ const progressBar = document.getElementById("progressBar");
 const progressFill = document.getElementById("progressFill");
 const resultArea = document.getElementById("resultArea");
 
+const alignBlock = document.getElementById("alignBlock");
+const scan15Btn = document.getElementById("scan15Btn");
+const export15Btn = document.getElementById("export15Btn");
+const status15 = document.getElementById("status15");
+const result15 = document.getElementById("result15");
+const scan30Btn = document.getElementById("scan30Btn");
+const export30Btn = document.getElementById("export30Btn");
+const status30 = document.getElementById("status30");
+const result30 = document.getElementById("result30");
+
 let lastResults = [];
 const sectionState = {
   main: { sortKey: "symbol", sortDir: 1 },
   hot: { sortKey: "symbol", sortDir: 1 },
+};
+
+// 15分K / 30分K 多頭排列（50均 > 150均 > 200均），只在 lastResults 已篩出的商品裡再篩一次
+let alignResults = { "15": [], "30": [] };
+const alignSectionState = {
+  "15": { sortKey: "symbol", sortDir: 1 },
+  "30": { sortKey: "symbol", sortDir: 1 },
 };
 
 async function fetchJson(url) {
@@ -293,6 +331,78 @@ function renderHotRow(r, i) {
   `;
 }
 
+async function analyzeAlignment(symbol, interval) {
+  const data = await fetchJson(
+    `${BASE}/v5/market/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=201`
+  );
+  const closed = data.result.list.slice(1).reverse();
+  if (closed.length < 200) return null;
+
+  const closes = closed.map(k => parseFloat(k[4]));
+  const ma50 = average(closes.slice(-50));
+  const ma150 = average(closes.slice(-150));
+  const ma200 = average(closes.slice(-200));
+  const price = closes[closes.length - 1];
+
+  if (!(ma50 > ma150 && ma150 > ma200)) return null;
+
+  return {
+    symbol,
+    price,
+    ma50,
+    ma150,
+    ma200,
+    strength: (ma50 - ma200) / ma200,
+  };
+}
+
+function renderAlignRow(r, i) {
+  return `
+    <tr>
+      <td class="rank">${i + 1}</td>
+      <td class="symbol">${r.symbol}.P</td>
+      <td>${formatPrice(r.price)}</td>
+      <td>${formatPrice(r.ma50)}</td>
+      <td>${formatPrice(r.ma150)}</td>
+      <td>${formatPrice(r.ma200)}</td>
+      <td class="pos">+${(r.strength * 100).toFixed(2)}%</td>
+    </tr>
+  `;
+}
+
+function renderAlignTable(interval, containerEl) {
+  const label = interval === "15" ? "15分K" : "30分K";
+  const rows = alignResults[interval];
+
+  containerEl.innerHTML = renderSection({
+    id: `align${interval}`,
+    title: `${label} 多頭排列（50均 &gt; 150均 &gt; 200均）`,
+    desc: `從目前 MA150 連續上揚清單（${lastResults.length} 檔）裡，再用 ${label} 檢查 MA50 &gt; MA150 &gt; MA200 是否排列。`,
+    rows,
+    state: alignSectionState[interval],
+    columns: [
+      { key: "symbol", label: "幣種" },
+      { key: "price", label: "現價" },
+      { key: "ma50", label: "MA50" },
+      { key: "ma150", label: "MA150" },
+      { key: "ma200", label: "MA200" },
+      { key: "strength", label: "MA50 領先 MA200" },
+    ],
+    rowFn: renderAlignRow,
+    emptyText: `目前沒有符合 ${label} MA50 &gt; MA150 &gt; MA200 排列的商品。`,
+  });
+
+  containerEl.querySelectorAll("th[data-key]").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.key;
+      const state = alignSectionState[interval];
+      if (state.sortKey === key) state.sortDir *= -1;
+      else { state.sortKey = key; state.sortDir = -1; }
+      renderAlignTable(interval, containerEl);
+    });
+  });
+}
+
 function renderSection({ id, title, desc, rows, state, columns, rowFn, emptyText }) {
   const sorted = sortRows(rows, state);
   const bodyRows = sorted.map(rowFn).join("");
@@ -394,6 +504,64 @@ function downloadTxt() {
   URL.revokeObjectURL(url);
 }
 
+function buildAlignExportText(interval) {
+  const rows = sortRows(alignResults[interval], { sortKey: "symbol", sortDir: 1 });
+  return rows.map(r => "BYBIT:" + r.symbol + ".P").join("\n");
+}
+
+function downloadAlignTxt(interval) {
+  const text = buildAlignExportText(interval);
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const ts = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  const stamp = `${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}`;
+  a.href = url;
+  a.download = `bybit-${interval}m-alignment-${stamp}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function runAlignScan(interval) {
+  const btn = interval === "15" ? scan15Btn : scan30Btn;
+  const otherBtn = interval === "15" ? scan30Btn : scan15Btn;
+  const exportBtnI = interval === "15" ? export15Btn : export30Btn;
+  const statusElI = interval === "15" ? status15 : status30;
+  const resultEl = interval === "15" ? result15 : result30;
+  const label = interval === "15" ? "15分K" : "30分K";
+
+  if (lastResults.length === 0) return;
+
+  scanBtn.disabled = true;
+  trendDaysSelect.disabled = true;
+  btn.disabled = true;
+  otherBtn.disabled = true;
+  exportBtnI.disabled = true;
+  statusElI.textContent = `掃描中... 0/${lastResults.length}`;
+
+  try {
+    const symbols = lastResults.map(r => r.symbol);
+    alignResults[interval] = await runPool(symbols, s => analyzeAlignment(s, interval), 8, (done, total) => {
+      statusElI.textContent = `掃描中... ${done}/${total}`;
+    });
+
+    statusElI.textContent = `掃描完成：MA150 上揚清單 ${lastResults.length} 檔中，${alignResults[interval].length} 檔符合 ${label} 多頭排列`;
+    renderAlignTable(interval, resultEl);
+    exportBtnI.disabled = alignResults[interval].length === 0;
+  } catch (e) {
+    resultEl.innerHTML = `<div class="error">掃描失敗：${e.message}</div>`;
+    statusElI.textContent = "發生錯誤";
+  } finally {
+    scanBtn.disabled = false;
+    trendDaysSelect.disabled = false;
+    btn.disabled = false;
+    otherBtn.disabled = false;
+  }
+}
+
 async function runScan() {
   TREND_DAYS = parseInt(trendDaysSelect.value, 10) || 7;
   scanBtn.disabled = true;
@@ -403,6 +571,13 @@ async function runScan() {
   progressFill.style.width = "0%";
   resultArea.innerHTML = "";
   statusEl.textContent = "正在取得所有 USDT 永續合約清單...";
+
+  // 主清單重新掃描，之前的 15分/30分排列結果已經失去意義，重置並先隱藏
+  alignBlock.style.display = "none";
+  alignResults = { "15": [], "30": [] };
+  result15.innerHTML = ""; result30.innerHTML = "";
+  status15.textContent = ""; status30.textContent = "";
+  export15Btn.disabled = true; export30Btn.disabled = true;
 
   try {
     const symbols = await getUsdtSymbols();
@@ -418,6 +593,7 @@ async function runScan() {
     statusEl.textContent = `掃描完成：共 ${symbols.length} 檔，MA150 連續 ${TREND_DAYS} 天上揚 ${lastResults.length} 檔，其中過去 ${MOMENTUM_DAYS} 天累積漲幅超過 ${(MOMENTUM_THRESHOLD * 100).toFixed(0)}% 有 ${hotCount} 檔`;
     renderTable();
     exportBtn.disabled = lastResults.length === 0;
+    alignBlock.style.display = lastResults.length === 0 ? "none" : "block";
   } catch (e) {
     resultArea.innerHTML = `<div class="error">掃描失敗：${e.message}</div>`;
     statusEl.textContent = "發生錯誤";
@@ -430,6 +606,10 @@ async function runScan() {
 
 scanBtn.addEventListener("click", runScan);
 exportBtn.addEventListener("click", downloadTxt);
+scan15Btn.addEventListener("click", () => runAlignScan("15"));
+export15Btn.addEventListener("click", () => downloadAlignTxt("15"));
+scan30Btn.addEventListener("click", () => runAlignScan("30"));
+export30Btn.addEventListener("click", () => downloadAlignTxt("30"));
 </script>
 </body>
 </html>
