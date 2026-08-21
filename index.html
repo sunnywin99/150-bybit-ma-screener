@@ -52,6 +52,12 @@
     cursor: pointer;
   }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
+  select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    padding: 9px 10px; border-radius: 8px; font-size: 0.9rem; cursor: pointer;
+  }
+  select:disabled { opacity: 0.5; cursor: not-allowed; }
+  .controls label { color: var(--muted); font-size: 0.85rem; }
   .status { color: var(--muted); font-size: 0.88rem; }
   .progress-bar {
     width: 100%; height: 6px; background: var(--border); border-radius: 4px;
@@ -105,12 +111,22 @@
   <h1>Bybit USDT 永續合約 MA150 上揚篩選器</h1>
   <div class="sub">
     掃描 Bybit 所有 USDT 本位（linear）永續合約的日K線，先看一件事：
-    日K計算出的 150 日均線（MA150），過去 7 天是不是每天都比前一天高（連續上揚，中間不能回頭）。
+    日K計算出的 150 日均線（MA150），過去所選天數是不是每天都比前一天高（連續上揚，中間不能回頭）。
     不看 MA50、MA200，符合的全部列成一份清單。
     再從這份清單裡，額外挑出過去 3 天累積漲幅超過 10% 的商品，列在下方的第二份清單。
     資料在你按下「開始掃描」時，即時從 Bybit 公開 API 抓取，不會儲存在任何伺服器上。
   </div>
   <div class="controls">
+    <label for="trendDaysSelect">連續上揚天數</label>
+    <select id="trendDaysSelect">
+      <option value="1">1 天</option>
+      <option value="2">2 天</option>
+      <option value="3">3 天</option>
+      <option value="4">4 天</option>
+      <option value="5">5 天</option>
+      <option value="6">6 天</option>
+      <option value="7" selected>7 天</option>
+    </select>
     <button id="scanBtn">開始掃描</button>
     <button id="exportBtn" disabled>匯出 TXT</button>
     <span class="status" id="status">尚未掃描</span>
@@ -125,12 +141,13 @@
 <script>
 const BASE = "https://api.bybit.com";
 const MA_PERIOD = 150;
-const TREND_DAYS = 7; // 過去 7 天，每天都比前一天高
+let TREND_DAYS = 7; // 過去 N 天，每天都比前一天高；由下拉選單決定，掃描開始時鎖定
 const MOMENTUM_DAYS = 3; // 過去 3 天的累積漲幅要超過門檻
 const MOMENTUM_THRESHOLD = 0.10; // 3天累積漲幅門檻：10%
 
 const scanBtn = document.getElementById("scanBtn");
 const exportBtn = document.getElementById("exportBtn");
+const trendDaysSelect = document.getElementById("trendDaysSelect");
 const statusEl = document.getElementById("status");
 const progressBar = document.getElementById("progressBar");
 const progressFill = document.getElementById("progressFill");
@@ -319,8 +336,8 @@ function renderTable() {
         { key: "symbol", label: "幣種" },
         { key: "price", label: "現價" },
         { key: "ma150", label: "MA150（今天）" },
-        { key: "ma150_7dAgo", label: "MA150（7天前）" },
-        { key: "change7d", label: "7天漲幅" },
+        { key: "ma150_7dAgo", label: `MA150（${TREND_DAYS}天前）` },
+        { key: "change7d", label: `${TREND_DAYS}天漲幅` },
       ],
       rowFn: renderMainRow,
       emptyText: "目前沒有符合的商品。",
@@ -370,7 +387,7 @@ function downloadTxt() {
   const pad = n => String(n).padStart(2, "0");
   const stamp = `${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}`;
   a.href = url;
-  a.download = `bybit-usdt-ma150-uptrend-${stamp}.txt`;
+  a.download = `bybit-usdt-ma150-uptrend-${TREND_DAYS}d-${stamp}.txt`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -378,8 +395,10 @@ function downloadTxt() {
 }
 
 async function runScan() {
+  TREND_DAYS = parseInt(trendDaysSelect.value, 10) || 7;
   scanBtn.disabled = true;
   exportBtn.disabled = true;
+  trendDaysSelect.disabled = true;
   progressBar.classList.add("active");
   progressFill.style.width = "0%";
   resultArea.innerHTML = "";
@@ -405,6 +424,7 @@ async function runScan() {
   } finally {
     progressBar.classList.remove("active");
     scanBtn.disabled = false;
+    trendDaysSelect.disabled = false;
   }
 }
 
