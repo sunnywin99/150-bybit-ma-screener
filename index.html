@@ -115,21 +115,33 @@
   <h1>Bybit USDT 永續合約 MA150 上揚篩選器</h1>
   <div class="sub">
     掃描 Bybit 所有 USDT 本位（linear）永續合約的日K線，先看一件事：
-    日K計算出的 150 日均線（MA150），過去所選天數是不是每天都比前一天高（連續上揚，中間不能回頭）。
+    日K計算出的 150 日均線（MA150），依你選的條件篩選——可以選「至少連續 N 天上揚」（上揚天數不少於 N 天，可能更多），
+    也可以選「剛好第 N 天上揚」（從最近一根已收盤日K數起，MA150 剛好連續漲了 N 天，再往前一天就沒漲了）。
     不看 MA50、MA200，符合的全部列成一份清單。
     再從這份清單裡，額外挑出過去 3 天累積漲幅超過 10% 的商品，列在下方的第二份清單。
     資料在你按下「開始掃描」時，即時從 Bybit 公開 API 抓取，不會儲存在任何伺服器上。
   </div>
   <div class="controls">
-    <label for="trendDaysSelect">連續上揚天數</label>
+    <label for="trendDaysSelect">上揚天數條件</label>
     <select id="trendDaysSelect">
-      <option value="1">1 天</option>
-      <option value="2">2 天</option>
-      <option value="3">3 天</option>
-      <option value="4">4 天</option>
-      <option value="5">5 天</option>
-      <option value="6">6 天</option>
-      <option value="7" selected>7 天</option>
+      <optgroup label="至少連續 N 天上揚（可能不只 N 天）">
+        <option value="a1">至少 1 天</option>
+        <option value="a2">至少 2 天</option>
+        <option value="a3">至少 3 天</option>
+        <option value="a4">至少 4 天</option>
+        <option value="a5">至少 5 天</option>
+        <option value="a6">至少 6 天</option>
+        <option value="a7" selected>至少 7 天</option>
+      </optgroup>
+      <optgroup label="剛好第 N 天上揚（第 N+1 天就沒漲了）">
+        <option value="e1">第 1 天</option>
+        <option value="e2">第 2 天</option>
+        <option value="e3">第 3 天</option>
+        <option value="e4">第 4 天</option>
+        <option value="e5">第 5 天</option>
+        <option value="e6">第 6 天</option>
+        <option value="e7">第 7 天</option>
+      </optgroup>
     </select>
     <button id="scanBtn">開始掃描</button>
     <button id="exportBtn" disabled>匯出 TXT</button>
@@ -162,7 +174,8 @@
 <script>
 const BASE = "https://api.bybit.com";
 const MA_PERIOD = 150;
-let TREND_DAYS = 7; // 過去 N 天，每天都比前一天高；由下拉選單決定，掃描開始時鎖定
+let TREND_DAYS = 7; // 天數 N；由下拉選單決定，掃描開始時鎖定
+let TREND_MODE = "atleast"; // "atleast" = 至少連續 N 天上揚；"exact" = 剛好第 N 天上揚（第 N+1 天沒漲）
 const MOMENTUM_DAYS = 3; // 過去 3 天的累積漲幅要超過門檻
 const MOMENTUM_THRESHOLD = 0.10; // 3天累積漲幅門檻：10%
 
@@ -231,7 +244,10 @@ function ma150Series(closes, days) {
 }
 
 async function analyzeSymbol(symbol) {
-  const needed = MA_PERIOD + TREND_DAYS + 1; // +1 給「捨棄未收盤K棒」用
+  // atleast 模式只需要看到第 TREND_DAYS 天；exact 模式還要多看一天，
+  // 確認第 TREND_DAYS+1 天「沒有」上揚（漲勢剛好在那裡被打斷）。
+  const seriesDays = TREND_MODE === "exact" ? TREND_DAYS + 1 : TREND_DAYS;
+  const needed = MA_PERIOD + seriesDays + 1; // +1 給「捨棄未收盤K棒」用
   const data = await fetchJson(
     `${BASE}/v5/market/kline?category=linear&symbol=${symbol}&interval=D&limit=${needed + 10}`
   );
@@ -241,10 +257,13 @@ async function analyzeSymbol(symbol) {
   if (closed.length < needed - 1) return null;
 
   const closes = closed.map(k => parseFloat(k[4]));
-  const series = ma150Series(closes, TREND_DAYS); // [今天, 昨天, ..., 7天前]
+  const series = ma150Series(closes, seriesDays); // series[0] = 最近一根已收盤日K算出的 MA150，series[j] = 再往前 j 天
 
   for (let j = 0; j < TREND_DAYS; j++) {
     if (!(series[j] > series[j + 1])) return null; // 只要有一天沒有比前一天高就淘汰
+  }
+  if (TREND_MODE === "exact" && series[TREND_DAYS] > series[TREND_DAYS + 1]) {
+    return null; // 第 TREND_DAYS+1 天也漲了，代表上揚天數超過 N 天，不是「剛好第 N 天」
   }
 
   const ma150 = series[0];
@@ -286,6 +305,12 @@ async function runPool(items, worker, concurrency, onProgress) {
   const workers = Array.from({ length: concurrency }, next);
   await Promise.all(workers);
   return results;
+}
+
+function trendLabel() {
+  return TREND_MODE === "exact"
+    ? `剛好第 ${TREND_DAYS} 天上揚`
+    : `至少連續 ${TREND_DAYS} 天上揚`;
 }
 
 function formatPrice(v) {
@@ -377,7 +402,7 @@ function renderAlignTable(interval, containerEl) {
   containerEl.innerHTML = renderSection({
     id: `align${interval}`,
     title: `${label} 多頭排列（50均 &gt; 150均 &gt; 200均）`,
-    desc: `從目前 MA150 連續上揚清單（${lastResults.length} 檔）裡，再用 ${label} 檢查 MA50 &gt; MA150 &gt; MA200 是否排列。`,
+    desc: `從目前 MA150 ${trendLabel()} 清單（${lastResults.length} 檔）裡，再用 ${label} 檢查 MA50 &gt; MA150 &gt; MA200 是否排列。`,
     rows,
     state: alignSectionState[interval],
     columns: [
@@ -429,7 +454,7 @@ function renderSection({ id, title, desc, rows, state, columns, rowFn, emptyText
 
 function renderTable() {
   if (lastResults.length === 0) {
-    resultArea.innerHTML = `<div class="empty">目前沒有 MA150 連續 ${TREND_DAYS} 天上揚的 USDT 永續合約。</div>`;
+    resultArea.innerHTML = `<div class="empty">目前沒有 MA150 ${trendLabel()} 的 USDT 永續合約。</div>`;
     return;
   }
 
@@ -438,8 +463,10 @@ function renderTable() {
   resultArea.innerHTML =
     renderSection({
       id: "main",
-      title: `MA150 連續 ${TREND_DAYS} 天上揚`,
-      desc: "日K算出的 150 日均線，過去 7 天每天都比前一天高。",
+      title: `MA150 ${trendLabel()}`,
+      desc: TREND_MODE === "exact"
+        ? `日K算出的 150 日均線，從最近一根已收盤日K數起，剛好連續 ${TREND_DAYS} 天每天都比前一天高，但再往前一天（第 ${TREND_DAYS + 1} 天）就沒有更高——代表這波上揚剛好是第 ${TREND_DAYS} 天。`
+        : `日K算出的 150 日均線，最近 ${TREND_DAYS} 天每天都比前一天高（可能不只 ${TREND_DAYS} 天）。`,
       rows: lastResults,
       state: sectionState.main,
       columns: [
@@ -497,7 +524,8 @@ function downloadTxt() {
   const pad = n => String(n).padStart(2, "0");
   const stamp = `${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}`;
   a.href = url;
-  a.download = `bybit-usdt-ma150-uptrend-${TREND_DAYS}d-${stamp}.txt`;
+  const modeTag = TREND_MODE === "exact" ? `day${TREND_DAYS}` : `${TREND_DAYS}d`;
+  a.download = `bybit-usdt-ma150-uptrend-${modeTag}-${stamp}.txt`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -563,7 +591,9 @@ async function runAlignScan(interval) {
 }
 
 async function runScan() {
-  TREND_DAYS = parseInt(trendDaysSelect.value, 10) || 7;
+  const raw = trendDaysSelect.value; // "a7" = 至少7天, "e3" = 剛好第3天
+  TREND_MODE = raw[0] === "e" ? "exact" : "atleast";
+  TREND_DAYS = parseInt(raw.slice(1), 10) || 7;
   scanBtn.disabled = true;
   exportBtn.disabled = true;
   trendDaysSelect.disabled = true;
@@ -590,7 +620,7 @@ async function runScan() {
     });
 
     const hotCount = lastResults.filter(r => r.momentum).length;
-    statusEl.textContent = `掃描完成：共 ${symbols.length} 檔，MA150 連續 ${TREND_DAYS} 天上揚 ${lastResults.length} 檔，其中過去 ${MOMENTUM_DAYS} 天累積漲幅超過 ${(MOMENTUM_THRESHOLD * 100).toFixed(0)}% 有 ${hotCount} 檔`;
+    statusEl.textContent = `掃描完成：共 ${symbols.length} 檔，MA150 ${trendLabel()} ${lastResults.length} 檔，其中過去 ${MOMENTUM_DAYS} 天累積漲幅超過 ${(MOMENTUM_THRESHOLD * 100).toFixed(0)}% 有 ${hotCount} 檔`;
     renderTable();
     exportBtn.disabled = lastResults.length === 0;
     alignBlock.style.display = lastResults.length === 0 ? "none" : "block";
